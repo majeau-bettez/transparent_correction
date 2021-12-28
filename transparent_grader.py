@@ -1,11 +1,11 @@
 import os
-import logging
+import logging  # For warning
 from datetime import datetime
 import time
 import re
 import pandas as pd
 import numpy as np
-import shutil
+import shutil  # Notably for copyfile
 from pathlib import Path
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -16,40 +16,63 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email import encoders
 
-
-# Set / fix styles
+# Set / fix styles issues
 sns.set_style()
 pd.DataFrame._repr_latex_ = lambda self: """\centering{}""".format(self.to_latex())
 
 
-# More formatting / style
-#def _repr_latex_(self):
-#    return "\centering{}".format(self.to_latex())
-#pd.DataFrame._repr_latex_ = _repr_latex_  # monkey patch pandas DataFrame
-
 def correction_parser(filename, exam_name):
-    """ A parser to define a `Grader` object based on a spreadsheet template of corrections, correction codes, etc."""
+    """ Reads in correction template and generates `Grader` object
+
+    Parameters
+    ----------
+    filename : str
+    exam_name : str
+
+    Returns
+    -------
+    Grader object
+
+    """
     with pd.ExcelFile(filename) as f:
         raw = pd.read_excel(f, sheet_name='Corrections', header=0, index_col=0)
         raw_codes = pd.read_excel(f, sheet_name='codes', header=0, index_col=[0, 1])
-        codes_universels = pd.read_excel(f, sheet_name='codes_universels', header=0, index_col=0)
-        totaux = pd.read_excel(f, sheet_name='totaux', header=0, index_col=0).squeeze()
+        universal_codes = pd.read_excel(f, sheet_name='codes_universels', header=0, index_col=0)
+        totals = pd.read_excel(f, sheet_name='totaux', header=0, index_col=0).squeeze()
         init = pd.read_excel(f, sheet_name='init', header=0, index_col=0).squeeze()
         versions = pd.read_excel(f, sheet_name='versions', header=0, index_col=0).squeeze()
 
-    return Grader(exam_name, raw, raw_codes, codes_universels, totaux, init, versions)
+    return Grader(exam_name, raw, raw_codes, universal_codes, totals, init, versions)
 
 
 class Grader:
 
-    def __init__(self, exam_name, raw_corr, raw_codes, codes_universels, totaux, init, versions=None):
+    def __init__(self, exam_name, raw_corr, raw_codes, universal_codes, totals, init, versions=None):
+        """
+        Grader class to contain raw correction data and processed grades
 
+        Parameters
+        ----------
+        exam_name : str
+            Name of exam, used for documentation
+        raw_corr: DataFrame
+            Correction codes for each student (row) and each question (columns) read from template
+        raw_codes: DataFrame
+            Definition and weight of each correction/error code; A negative "penalty" means that points are being added.
+        universal_codes : DataFrame
+            Definition and weight (relative and/or absolute penalty) of error codes that can apply to any question
+        totals : Data Series
+            Total points for each question
+        versions: DataFrame (optional)
+            For each question (row) and each version of the exam (columns, 'A', 'B', etc.) the name/number of the
+            question as seen by the student on the exam.
+        """
         # Data from tremplate
         self.exam_name = exam_name
         self.raw_corr = raw_corr
         self.raw_codes = raw_codes
-        self.codes_universels = codes_universels
-        self.totaux = totaux
+        self.universal_codes = universal_codes
+        self.totals = totals
         self.init = init
         self.versions = versions
 
@@ -58,17 +81,16 @@ class Grader:
         self._CONTACT_COLS = ['prénom', 'nom', 'courriel']
         self._COLS_TO_ALWAYS_DROP = ['version', 'Exemple/explication']
 
-
         # Refined data
         self.contacts = raw_corr[self._CONTACT_COLS]
         self.corr = raw_corr.drop(self._CONTACT_COLS, axis=1)
 
         # Semi-final variables
-        self.C = None
+        self.correction_matrix = None
         self.codes = None
 
         # Variables finales
-        self.notes = None
+        self.grades = None
 
         self.message = dict()
 
@@ -77,7 +99,6 @@ class Grader:
         """
 
         self.message['foreword'] = ""
-
 
         self.message['score overview'] = """
 
@@ -106,15 +127,36 @@ class Grader:
         self.message['closing'] = """ """
 
     def calc_grades(self, cols_to_drop=None):
+        """
+        The main method. Calculates the grade of each student.
+
+        Calls in sequence `_pivot_corr()`, `_clean_codes()`, `_check_sanity_and_harmonize()`, and `_calc_grades()`
+
+        Parameters
+        ----------
+        cols_to_drop : list
+            Columns in the template to ignore in the calculation process (custom additionnal columns, etc.)
+
+        """
         if cols_to_drop is None:
             cols_to_drop = []
 
         self._pivot_corr(cols_to_drop=cols_to_drop)
         self._clean_codes(cols_to_drop=cols_to_drop)
         self._check_sanity_and_harmonize()
-        self._calc_notes()
+        self._calc_grades()
 
     def _pivot_corr(self, cols_to_drop=None):
+        """ Pivot the correction comments in raw_corr into a binary matrix
+
+         For each student, we go from a list of error codes to a binary matrix indicating which students (rows) did
+          what mistake (columns, level 1) in what question (columns, level 0)
+
+        Parameters
+        ----------
+        cols_to_drop : list
+            Columns in the template to ignore in the calculation process (custom additionnal columns, etc.)
+        """
 
         cols_to_drop = self._COLS_TO_ALWAYS_DROP + cols_to_drop
         # Define dataframe with multi-index columns capturing all correction types
@@ -127,25 +169,32 @@ class Grader:
             except NameError:
                 mcx = new_cx
 
-        C = pd.DataFrame(0.0, index=self.corr.index, columns=mcx)
+        correction_matrix = pd.DataFrame(0.0, index=self.corr.index, columns=mcx)
 
         # Fill
         for ix in self.corr.index:
             for cx in self.corr.columns:
                 erreurs = _clean(self.corr.loc[ix, cx])
                 for err in erreurs:
-                    C.loc(axis=0)[ix].loc[[cx], err] += 1
+                    correction_matrix.loc(axis=0)[ix].loc[[cx], err] += 1
 
         # Remove other stuff
         if cols_to_drop is not None:
-            C = C.drop(cols_to_drop, axis=1, level=0, errors='ignore')
+            correction_matrix = correction_matrix.drop(cols_to_drop, axis=1, level=0, errors='ignore')
 
-        C = C.reindex(columns=self.totaux.index, level=0)
+        correction_matrix = correction_matrix.reindex(columns=self.totals.index, level=0)
 
         # Enlève OK
-        self.C = C.drop(labels=self._OK_TERMS, axis=1, level=1, errors='ignore')
+        self.correction_matrix = correction_matrix.drop(labels=self._OK_TERMS, axis=1, level=1, errors='ignore')
 
     def _clean_codes(self, cols_to_drop):
+        """ Clean correction codes and weighting (drop empty, expand universal correction codes, etc.)
+
+        Parameters
+        ----------
+        cols_to_drop : list
+            Columns in the template to ignore in the calculation process (custom additionnal columns, etc.)
+        """
 
         # Drop extraneous columns
         cols_to_drop = self._COLS_TO_ALWAYS_DROP + cols_to_drop
@@ -156,45 +205,68 @@ class Grader:
         self.codes = codes.loc[~todrop]
 
         # Scale and insert universal codes
-        for ix, v in self.totaux.items():
-            scaled_codes = (self.codes_universels[['pénalités relatives', 'pénalités_absolues']] * [v, 1])
+        for ix, v in self.totals.items():
+            scaled_codes = (self.universal_codes[['pénalités relatives', 'pénalités_absolues']] * [v, 1])
             selected_codes = scaled_codes.dropna(axis=0, how='all').min(axis=1, skipna=True).to_frame('points')
-            new_codes = pd.concat([self.codes_universels['définition'], selected_codes], axis=1, join='inner')
+            new_codes = pd.concat([self.universal_codes['définition'], selected_codes], axis=1, join='inner')
             new_codes.index = pd.MultiIndex.from_product([[ix], new_codes.index])
             self.codes = pd.concat([self.codes, new_codes])
-        self.codes.reindex(index=self.totaux.index, level=0)
+        self.codes.reindex(index=self.totals.index, level=0)
 
-    def _distribute_codes(self, common_ix, applicables):
+    def distribute_codes(self, common_ix, applicables):
+        """ Expand code list if a common correction code is applicable to more than one question (but not all).
+
+        Parameters
+        ----------
+        common_ix : str
+            A common correction code already defined in self.codes for a question
+        applicables: list
+            List of other questions for which this code is also applicable
+        """
         common_codes = self.codes.loc[common_ix]
         tmp = pd.concat([common_codes, ] * len(applicables), keys=applicables)
         codes = pd.concat([self.codes, tmp], axis=0).sort_index()
         self.codes = codes.drop(common_ix, axis=0)
 
     def _check_sanity_and_harmonize(self):
-        missing_codes = self.C.columns.difference(self.codes.index)
+        """ Inspect for missing correction codes & harmonize dimensions. """
+        missing_codes = self.correction_matrix.columns.difference(self.codes.index)
         if len(missing_codes):
             logging.warning("Certains codes de correction ne sont pas définis: {}".format(missing_codes))
         else:
-            self.codes = self.codes.reindex(self.C.columns)
+            self.codes = self.codes.reindex(self.correction_matrix.columns)
 
-    def _calc_notes(self):
-        penalites = (- self.C * self.codes['points']).groupby(level=0, axis=1).sum()
+    def _calc_grades(self):
+        """ Calculate grades: the init - the sum of the weighted corrections, with minimum of 0 (no negative grades)"""
+        penalites = (- self.correction_matrix * self.codes['points']).groupby(level=0, axis=1).sum()
 
         # Au cas où certaines questions sont absentes par absence de pénalités (tous on eu tout bon bon)
         penalites = penalites.reindex(columns=self.init.index, fill_value=0.0)
 
-        self.notes = penalites + self.init
-        self.notes[self.notes < 0] = 0
-        self.mean = self.notes.sum(1).mean()
-        self.median = self.notes.sum(1).median()
+        self.grades = penalites + self.init
+        self.grades[self.grades < 0] = 0
 
     @property
-    def notes_total(self):
-        return pd.concat([self.contacts, self.notes.sum(1).to_frame('points')], axis=1)
+    def grades_total(self):
+        """ Calculate the total grade and format"""
+        return pd.concat([self.contacts, self.grades.sum(1).to_frame('points')], axis=1)
 
-    def _get_version(self, pmat):
+    @property
+    def grades_rel(self):
+        """ Express each question in terms of percentage"""
+        return self.grades * 100 / self.totals
+
+    @property
+    def mean(self):
+        return self.grades.sum(1).mean()
+
+    @property
+    def median(self):
+        return self.grades.sum(1).median()
+
+    def _get_version(self, student_id):
         try:
-            version = self.corr.loc[pmat, 'version']
+            version = self.corr.loc[student_id, 'version']
         except KeyError:
             version = None
         return version
@@ -203,11 +275,11 @@ class Grader:
 
         # TODO: fix properly
         if q is None:
-            notes_q = self.notes_total['points']
+            grades_q = self.grades_total['points']
         else:
-            notes_q = (self.notes / self.totaux)[[q]] * 100
+            grades_q = self.grades_rel[[q]]
 
-        out = give_overview(notes_q, q, bins=bins, filename=filename, fail=fail)
+        out = give_overview(grades_q, q, bins=bins, filename=filename, fail=fail)
         return out
 
     def archive_grades(self, directory=None):
@@ -219,27 +291,27 @@ class Grader:
         timestamped_filepath = Path(directory, self.exam_name + stamp + '.xlsx')
 
         with pd.ExcelWriter(filepath) as writer:
-            self.notes_total.to_excel(writer, sheet_name='notes_totales')
-            self.notes.to_excel(writer, sheet_name='detail')
-            self.codes.loc[self.C.columns].to_excel(writer, sheet_name='codes_pondération')
-            self.C.to_excel(writer, sheet_name='erreurs')
+            self.grades_total.to_excel(writer, sheet_name='notes_totales')
+            self.grades.to_excel(writer, sheet_name='detail')
+            self.codes.loc[self.correction_matrix.columns].to_excel(writer, sheet_name='codes_pondération')
+            self.correction_matrix.to_excel(writer, sheet_name='erreurs')
 
         shutil.copyfile(filepath, timestamped_filepath)
 
     # Compilation de la lettre
-    def compilation_message(self, pmat, version=None):
+    def compilation_message(self, student_id, version=None):
 
-        c = self.C.loc[pmat]
+        c = self.correction_matrix.loc[student_id]
         if version:
             question_numbers = self.versions[version].to_dict()
             codes = self.codes.rename(index=question_numbers, level=0).sort_index()
-            notes = self.notes.rename(columns=question_numbers, level=0).sort_index()
-            totaux = self.totaux.rename(index=question_numbers, level=0).sort_index()
+            grades = self.grades.rename(columns=question_numbers, level=0).sort_index()
+            totals = self.totals.rename(index=question_numbers, level=0).sort_index()
             c = c.rename(index=question_numbers, level=0)
         else:
             codes = self.codes
-            notes = self.notes
-            totaux = self.totaux
+            grades = self.grades
+            totals = self.totals
 
         # Index des erreurs commises
         ix = c.where(c != 0.).dropna().sort_index().index
@@ -250,12 +322,12 @@ class Grader:
         error_table = details_erreurs[['points', 'Erreur']].reset_index().to_markdown(showindex=False,
                                                                                       tablefmt='presto')
 
-        lettre = self.message['salutation'].format(self.contacts.loc[pmat, 'prénom'],
-                                                   self.contacts.loc[pmat, 'nom'],)
+        lettre = self.message['salutation'].format(self.contacts.loc[student_id, 'prénom'],
+                                                   self.contacts.loc[student_id, 'nom'],)
         lettre += self.message['foreword']
-        lettre += self.message['score_overview'].format( self.mean, self.median, self.notes.loc[pmat].sum())
-        for i in totaux.index:
-            lettre += self.message['score_details'].format(i, notes.loc[pmat, i], totaux[i])
+        lettre += self.message['score_overview'].format(self.mean, self.median, self.grades.loc[student_id].sum())
+        for i in totals.index:
+            lettre += self.message['score_details'].format(i, grades.loc[student_id, i], totals[i])
 
         lettre += self.message['mistakes_details'].format(error_table, details_erreurs['points'])
         lettre += self.message['closing']
@@ -274,28 +346,28 @@ class Grader:
             server.login(server_login, password)
 
             if targeted_recipients is None:
-                recipients = self.C.index
+                recipients = self.correction_matrix.index
             else:
                 recipients = targeted_recipients
 
             # Write email
-            for pmat in recipients:
+            for student_id in recipients:
 
-                version = self._get_version(pmat)
+                version = self._get_version(student_id)
                 msg = MIMEMultipart()
 
                 msg['Subject'] = "Votre note pour : {}".format(self.exam_name)
                 msg['From'] = sender
                 msg['BCC'] = ', '.join(bcc_recipients)
-                msg['To'] = self.contacts.loc[pmat, 'courriel']
+                msg['To'] = self.contacts.loc[student_id, 'courriel']
 
-                msg.attach(MIMEText(self.compilation_message(pmat, version)))
+                msg.attach(MIMEText(self.compilation_message(student_id, version)))
 
                 if exam_dir:
-                    for i in os.listdir(exam_dir / str(pmat)):
+                    for i in os.listdir(exam_dir / str(student_id)):
                         if re.search('.\.pdf$', i):
                             part = MIMEBase('application', 'octet-stream')
-                            with open(exam_dir / str(pmat) / i, 'rb') as file:
+                            with open(exam_dir / str(student_id) / i, 'rb') as file:
                                 part.set_payload(file.read())
                             encoders.encode_base64(part)
                             part.add_header('Content-Disposition',
@@ -310,29 +382,28 @@ class Grader:
             server.quit()
 
 
-
-def give_overview(notes, question=None, bins=None, filename=None, fail=None):
+def give_overview(grades, question=None, bins=None, filename=None, fail=None):
     """ Donner une vue d'ensemble"""
     if question is not None:
-        notes = notes[question]
-    notes = notes.dropna()
+        grades = grades[question]
+    grades = grades.dropna()
 
-    median = notes.median()
-    mean = notes.mean()
-    stdev = notes.std()
+    median = grades.median()
+    mean = grades.mean()
+    stdev = grades.std()
 
     print("moyenne: {:.1f}%".format(mean))
     print("déviation standard: {:.1f} points de pourcentage".format(stdev))
     print("valeur médiane: {:.1f}%".format(median))
-    print("Nombre total d'étudiants: {:.0f}".format(notes.shape[0]))
+    print("Nombre total d'étudiants: {:.0f}".format(grades.shape[0]))
     if fail:
-        print("Nombre d'échecs: {:.0f}".format(np.sum(notes < fail)))
-    ax = sns.distplot(notes,
+        print("Nombre d'échecs: {:.0f}".format(np.sum(grades < fail)))
+    ax = sns.distplot(grades,
                       bins=bins,
                       rug=True, 
                       kde=False, 
-                      rug_kws = {"color":'r'}, 
-                      hist_kws= {"alpha":.6}, 
+                      rug_kws={"color": 'r'},
+                      hist_kws={"alpha": .6},
                       axlabel='Notes', 
                       label=question)
     ax.set(ylabel='Nombre d\'étudiants')
@@ -349,8 +420,7 @@ def give_overview(notes, question=None, bins=None, filename=None, fail=None):
     plt.vlines(mean+stdev, dims[2], dims[3], 
                label='+ déviation standard', colors='gray')
     if fail:
-        plt.vlines(fail, dims[2], dims[3], label='passage', 
-               colors='red')
+        plt.vlines(fail, dims[2], dims[3], label='passage', colors='red')
 
     plt.legend(loc='upper left')
 
@@ -358,44 +428,45 @@ def give_overview(notes, question=None, bins=None, filename=None, fail=None):
         plt.savefig(filename + '.svg')
         plt.savefig(filename + '.pdf')
 
-    return notes, ax
+    return grades, ax
 
-def all_letters(seuilD, seuilA, seuilAA):
+
+def all_letters(threshold_d, threshold_a, threshold_a_star):
 
     dtoa = ['d ', 'd+', 'c ', 'c+', 'b ', 'b+', 'a ']
-    step = (seuilA - seuilD) / (len(dtoa) - 1)
-    seuils = np.empty((8,2), dtype='object')
-    seuils = seuils.reshape((8,2))
+
+    nb_thresholds = len(dtoa) + 1
+    step = (threshold_a - threshold_d) / (len(dtoa) - 1)
+    thresholds = np.empty((nb_thresholds, 2), dtype='object')
+    thresholds = thresholds.reshape((nb_thresholds, 2))
     
     # Calculer les seuils intermédiaires
     i = 0
     for lettre in dtoa:
-        seuils[i, 0] = seuilD
-        seuils[i, 1] = lettre
-        seuilD += step
+        thresholds[i, 0] = threshold_d
+        thresholds[i, 1] = lettre
+        threshold_d += step
         i += 1
-    seuils[-2, 0] = seuilA # to avoid rounding errors
-    seuils[-1, :] = [seuilAA, 'a*']
-    return seuils
+    thresholds[-2, 0] = threshold_a  # to avoid rounding errors
+    thresholds[-1, :] = [threshold_a_star, 'a*']
+    return thresholds
 
-def give_letter(grade, seuilD, seuilA, seuilAA, forcage=0.0, verbose=False):
 
-    seuils = all_letters(seuilD, seuilA, seuilAA)
+def give_letter(grade, threshold_d, threshold_a, threshold_a_star, forcing=0.0):
+
+    thresholds = all_letters(threshold_d, threshold_a, threshold_a_star)
 
     # Calculer la cote pour chaque grade
     letter = 'f'
-    for i in range(seuils.shape[0]):
-        if grade >= seuils[i, 0] - forcage:
-            letter = seuils[i, 1]
+    for i in range(thresholds.shape[0]):
+        if grade >= thresholds[i, 0] - forcing:
+            letter = thresholds[i, 1]
         else:
             break
     return letter
 
-        
+# Helper functions
 
-
-
-## Helper functions
 
 def _clean(s):
     try:
