@@ -1,4 +1,5 @@
 import os
+import getpass
 import logging  # For warning
 from datetime import datetime
 import time
@@ -19,6 +20,37 @@ from email import encoders
 # Set / fix styles issues
 sns.set_style()
 pd.DataFrame._repr_latex_ = lambda self: """\centering{}""".format(self.to_latex())
+
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+_txt_salutation = """Bonjour {} {},
+
+"""
+
+_txt_score_overview = """
+
+La moyenne du groupe est de {:.1f}%, et sa note médiane est de {:.1f}%. Vous avez obtenu une note de {:.1f}%. 
+
+---------------------
+
+Voici le détail de vos points: 
+
+"""
+
+_txt_score_details = """ 
+    {} : {} points sur {}
+    """
+
+_txt_mistakes_details = """
+
+---------------------
+
+Et voici le détail des points perdus:
+
+{}
+
+------------------ """
 
 
 def correction_parser(filename, exam_name):
@@ -93,38 +125,12 @@ class Grader:
         self.grades = None
 
         self.message = dict()
-
-        self.message['salutation'] = """ Bonjour {} {},
-
-        """
-
+        self.message['salutation'] = _txt_salutation
         self.message['foreword'] = ""
-
-        self.message['score overview'] = """
-
-        La moyenne du groupe est de {:.1f}%, et sa note médiane est de {:.1f}%. Vous avez obtenu une note de {:.1f}%. 
-
-        ---------------------
-
-        Voici le détail de vos points: 
-
-        """
-
-        self.message['score_details'] = """ 
-            {} : {} points sur {}
-            """
-
-        self.message['mistakes_details'] = """
-
-        ---------------------
-
-        Et voici le détail des points perdus:
-
-        {}
-
-        ------------------ """
-
-        self.message['closing'] = """ """
+        self.message['score_overview'] = _txt_score_overview
+        self.message['score_details'] = _txt_score_details
+        self.message['mistakes_details'] = _txt_mistakes_details
+        self.message['closing'] = ""
 
     def calc_grades(self, cols_to_drop=None):
         """
@@ -333,17 +339,22 @@ class Grader:
         lettre += self.message['closing']
         return lettre
 
-    def send_results(self, sender, server, server_login, targeted_recipients=None, bcc_recipients=None, exam_dir=None):
+    def send_results(self, sender, server, targeted_recipients=None, bcc_recipients=None, exam_dir=None):
+
 
         do_send = input('Ready to send emails? [y/n]')
 
-        if do_send == 'y' and False:
-            password = input('Insert your password for the email server.')
+        if do_send == 'y':
+            server_login = getpass.getpass('Insert your server login ID (e.g., p-matricule): ')
+            password = getpass.getpass('Insert your password for the email server: ')
 
             # Contact server
             server = smtplib.SMTP(server, 587)
             server.starttls()
             server.login(server_login, password)
+
+            if bcc_recipients is None:
+                bcc_recipients = []
 
             if targeted_recipients is None:
                 recipients = self.correction_matrix.index
@@ -375,7 +386,8 @@ class Grader:
                             msg.attach(part)
 
                 server.send_message(msg)
-                print('Message sent to {}'.format(msg['To']))
+                full_name = self.contacts.loc[student_id, ['prénom', 'nom']]
+                print('Message sent to {} {}'.format(*full_name))
                 time.sleep(5)
 
             print('Done sending messages!')
