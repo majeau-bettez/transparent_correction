@@ -24,6 +24,9 @@ pd.DataFrame._repr_latex_ = lambda self: """\centering{}""".format(self.to_latex
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+
+# Text strings for automated messages
+
 _txt_salutation = """Bonjour {} {},
 
 """
@@ -270,6 +273,22 @@ class Grader:
     def median(self):
         return self.grades.sum(1).median()
 
+    @property
+    def error_frequency(self):
+        """ Calculate the frequency of each error for each question
+
+        Returns
+        -------
+        freq_err : DataFrame
+
+        """
+        question_order = self.totals.index
+        freq_err = self.correction_matrix.sum().to_frame('fréquence erreurs (%)') * 100 / self.contacts.shape[0]
+        freq_err = freq_err.sort_values(by=['fréquence erreurs (%)'], ascending=False).reindex(question_order, level=0).round(1)
+        freq_err = freq_err.join(self.codes['définition'])
+
+        return freq_err
+
     def _get_version(self, student_id):
         try:
             version = self.corr.loc[student_id, 'version']
@@ -296,10 +315,12 @@ class Grader:
         filepath = Path(directory, self.exam_name + '.xlsx')
         timestamped_filepath = Path(directory, self.exam_name + stamp + '.xlsx')
 
+
         with pd.ExcelWriter(filepath) as writer:
             self.grades_total.to_excel(writer, sheet_name='notes_totales')
             self.grades.to_excel(writer, sheet_name='detail')
             self.codes.loc[self.correction_matrix.columns].to_excel(writer, sheet_name='codes_pondération')
+            self.error_frequency.to_excel(writer, sheet_name='fréquence_erreurs')
             self.correction_matrix.to_excel(writer, sheet_name='erreurs')
 
         shutil.copyfile(filepath, timestamped_filepath)
