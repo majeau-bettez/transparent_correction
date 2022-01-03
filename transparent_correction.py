@@ -11,6 +11,8 @@ from pathlib import Path
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+import jenkspy  # Jenks clustering
+
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -24,6 +26,12 @@ pd.DataFrame._repr_latex_ = lambda self: """\centering{}""".format(self.to_latex
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+# Constants
+
+_FAIL_LETTER = 'f'
+_ALL_LETTERS = ['f', 'd', 'd+', 'c', 'c+', 'b', 'b+', 'a', 'a+']
+_ALL_PASSING_LETTERS = ['d', 'd+', 'c', 'c+', 'b', 'b+', 'a', 'a+']
+_ALL_PASSING_NORMAL_LETTERS = ['d', 'd+', 'c', 'c+', 'b', 'b+', 'a']
 
 # Text strings for automated messages
 
@@ -284,7 +292,8 @@ class Grader:
         """
         question_order = self.totals.index
         freq_err = self.correction_matrix.sum().to_frame('fréquence erreurs (%)') * 100 / self.contacts.shape[0]
-        freq_err = freq_err.sort_values(by=['fréquence erreurs (%)'], ascending=False).reindex(question_order, level=0).round(1)
+        freq_err = freq_err.sort_values(by=['fréquence erreurs (%)'], ascending=False).reindex(question_order, level=0
+                                                                                               ).round(1)
         freq_err = freq_err.join(self.codes['définition'])
 
         return freq_err
@@ -361,6 +370,10 @@ class Grader:
         return lettre
 
     def send_results(self, sender, server, targeted_recipients=None, bcc_recipients=None, exam_dir=None):
+        """ Send result report to each student
+
+
+        """
 
 
         do_send = input('Ready to send emails? [y/n]')
@@ -462,6 +475,51 @@ def give_overview(grades, question=None, bins=None, filename=None, fail=None):
         plt.savefig(filename + '.pdf')
 
     return grades, ax
+
+
+def cluster_grades(grades, threshold_passing, threshold_a=None, threshold_a_star=None):
+    """
+
+    Parameters
+    ----------
+    grades : Data Series
+        Numerical grades to regroup between letter grades
+
+    Returns
+    -------
+    cotes : DataFrame
+        Letter grades, following different paradigms
+
+    """
+    # Sort passsing grades
+    passing_grades = grades[grades > threshold_passing]
+    cotes = grades.sort_values().to_frame()
+
+    # Calculate deltas between adjacent grades
+    cotes['delta'] = ((cotes['total'] - cotes['total'].shift(+1)).round(1)).fillna(0)
+
+    # division in quantiles
+    cotes['quantiles'] = pd.qcut(passing_grades, q=len(_ALL_PASSING_NORMAL_LETTERS), labels=_ALL_PASSING_NORMAL_LETTERS)
+
+    # division in equal grande ranges
+    cotes['equal_ranges'] = pd.cut(passing_grades, bins=len(_ALL_PASSING_LETTERS), labels=_ALL_PASSING_LETTERS)
+
+    # Jenks Natural break clustering
+    breaks = jenkspy.jenks_breaks(passing_grades.values, len(_ALL_PASSING_LETTERS))
+    cotes['jenks'] = pd.cut(passing_grades, bins=breaks, labels=_ALL_PASSING_LETTERS, include_lowest=True)
+
+    # Proposed divisions
+
+    if threshold_a:
+        breaks = pd.DataFrame(all_letters(threshold_passing, threshold_a, threshold_a_star))
+        breaks = breaks.append([100.0])
+        cotes['proposed'] = pd.cut(passing_grades, bins=breaks[0], labels=breaks[1].dropna(), include_lowest=True)
+
+    # Finaliser
+    letter_cols = [i for i in cotes.columns if i not in ['mintotal', 'delta']]
+    cotes.loc[:, letter_cols] = cotes[letter_cols].astype(object).fillna(_FAIL_LETTER)
+
+    return cotes
 
 
 def all_letters(threshold_d, threshold_a, threshold_a_star):
