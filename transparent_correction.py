@@ -35,34 +35,37 @@ _ALL_PASSING_NORMAL_LETTERS = ['d', 'd+', 'c', 'c+', 'b', 'b+', 'a']
 
 # Text strings for automated messages
 
-_txt_salutation = """Bonjour {} {},
-
+_txt_salutation = """\
+        <html>
+          <body>
+          <p> Bonjour {} {}, <br><br>
 """
+
+_txt_end = """    </p>
+                  </body>
+              </html>
+              """
 
 _txt_score_overview = """
 
-La moyenne du groupe est de {:.1f} points, et sa note médiane est de {:.1f} points. Vous avez obtenu une note de {:.1f}
-points. 
+La moyenne du groupe est de {:.1f} points, et sa note médiane est de {:.1f} points. Vous avez obtenu une note de {:.1f} points. 
+<hr>
 
----------------------
+Voici le détail de vos points:
+""".replace('\n', '<br>')
 
-Voici le détail de vos points: 
-
-"""
-
-_txt_score_details = """ 
+_txt_score_details = """
     {} : {} points sur {}
-    """
+    """.replace('\n', '<br>')
 
 _txt_mistakes_details = """
-
----------------------
+<hr>
 
 Et voici le détail des points perdus:
 
 {}
 
------------------- """
+<hr> """.replace('\n', '<br>')
 
 
 def correction_parser(filename, exam_name):
@@ -371,18 +374,18 @@ class Grader:
         # Données sur les erreurs commises
         details_erreurs = codes.loc[ix][['définition', 'points']]
         details_erreurs.columns = ['Erreur', 'points']
-        error_table = details_erreurs[['points', 'Erreur']].reset_index().to_markdown(showindex=False,
-                                                                                      tablefmt='presto')
+        error_table = details_erreurs[['points', 'Erreur']].to_html()
 
         lettre = self.message['salutation'].format(self.contacts.loc[student_id, 'prénom'],
                                                    self.contacts.loc[student_id, 'nom'],)
-        lettre += self.message['foreword']
+        lettre += self.message['foreword'].replace('\n', '<br>')
         lettre += self.message['score_overview'].format(self.mean, self.median, self.grades.loc[student_id].sum())
         for i in totals.index:
             lettre += self.message['score_details'].format(i, grades.loc[student_id, i], totals[i])
 
-        lettre += self.message['mistakes_details'].format(error_table, details_erreurs['points'])
-        lettre += self.message['closing']
+        lettre += self.message['mistakes_details'].format(error_table)
+        lettre += self.message['closing'].replace('\n', '<br>')
+        lettre += _txt_end
         return lettre
 
     def send_results(self, sender, server, targeted_recipients=None, bcc_recipients=None, exam_dir=None):
@@ -422,7 +425,7 @@ class Grader:
                 msg['BCC'] = ', '.join(bcc_recipients)
                 msg['To'] = self.contacts.loc[student_id, 'courriel']
 
-                msg.attach(MIMEText(self.compilation_message(student_id, version)))
+                msg.attach(MIMEText(self.compilation_message(student_id, version), "html"))
 
                 if exam_dir:
                     for i in os.listdir(exam_dir / str(student_id)):
