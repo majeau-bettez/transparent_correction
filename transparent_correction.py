@@ -41,7 +41,8 @@ _txt_salutation = """Bonjour {} {},
 
 _txt_score_overview = """
 
-La moyenne du groupe est de {:.1f}%, et sa note médiane est de {:.1f}%. Vous avez obtenu une note de {:.1f}%. 
+La moyenne du groupe est de {:.1f} points, et sa note médiane est de {:.1f} points. Vous avez obtenu une note de {:.1f}
+points. 
 
 ---------------------
 
@@ -253,6 +254,18 @@ class Grader:
         else:
             self.codes = self.codes.reindex(self.correction_matrix.columns)
 
+        # Check that all questions are appropriately represented
+        qx1 = set(self.codes.index.levels[0])
+        qx2 = set(self.correction_matrix.columns.levels[0])
+        qx3 = set(self.totals.index)
+        qx4 = set(self.init.index)
+
+        if qx1 == qx2 == qx3 == qx4:
+            pass
+        else:
+            logging.warning("La liste des questions n'est pas la même pour tous les onglets.")
+
+
     def _calc_grades(self):
         """ Calculate grades: the init - the sum of the weighted corrections, with minimum of 0 (no negative grades)"""
         penalites = (- self.correction_matrix * self.codes['points']).groupby(level=0, axis=1).sum()
@@ -295,6 +308,9 @@ class Grader:
         freq_err = freq_err.sort_values(by=['fréquence erreurs (%)'], ascending=False).reindex(question_order, level=0
                                                                                                ).round(1)
         freq_err = freq_err.join(self.codes['définition'])
+
+        # Filter out "errors" with zero penalty
+        freq_err = freq_err.loc[self.codes['points'] != 0]
 
         return freq_err
 
@@ -438,9 +454,9 @@ def give_overview(grades, question=None, bins=None, filename=None, fail=None):
     mean = grades.mean()
     stdev = grades.std()
 
-    print("moyenne: {:.1f}%".format(mean))
-    print("déviation standard: {:.1f} points de pourcentage".format(stdev))
-    print("valeur médiane: {:.1f}%".format(median))
+    print("moyenne: {:.1f} points".format(mean))
+    print("déviation standard: {:.1f} points".format(stdev))
+    print("valeur médiane: {:.1f} points".format(median))
     print("Nombre total d'étudiants: {:.0f}".format(grades.shape[0]))
     if fail:
         print("Nombre d'échecs: {:.0f}".format(np.sum(grades < fail)))
