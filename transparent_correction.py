@@ -55,13 +55,14 @@ Voici le détail de vos points:
 """.replace('\n', '<br>')
 
 _txt_score_details = """
-    {} : {} points sur {}
+    {} : {}
+        {} points sur {}
     """.replace('\n', '<br>')
 
 _txt_mistakes_details = """
 <hr>
 
-Et voici le détail des points perdus:
+Et voici le détail des points perdus (toute pénalité négative correspond à un point 'gagné' ou 'bonus'):
 
 {}
 
@@ -85,16 +86,23 @@ def correction_parser(filename, exam_name):
         raw = pd.read_excel(f, sheet_name='Corrections', header=0, index_col=0)
         raw_codes = pd.read_excel(f, sheet_name='codes', header=0, index_col=[0, 1])
         universal_codes = pd.read_excel(f, sheet_name='codes_universels', header=0, index_col=0)
-        totals = pd.read_excel(f, sheet_name='totaux', header=0, index_col=0).squeeze()
+        tmp = pd.read_excel(f, sheet_name='totaux', header=0, index_col=0)
+        totals = tmp.loc[:, 'points']
+        try:
+            titles = tmp.loc[:, 'titre'].fillna('')
+        except KeyError:
+            titles = pd.Series('', index=totals.index, name='titre').fillna('')
+
+
         init = pd.read_excel(f, sheet_name='init', header=0, index_col=0).squeeze()
         versions = pd.read_excel(f, sheet_name='versions', header=0, index_col=0).squeeze()
 
-    return Grader(exam_name, raw, raw_codes, universal_codes, totals, init, versions)
+    return Grader(exam_name, raw, raw_codes, universal_codes, totals, init, titles, versions)
 
 
 class Grader:
 
-    def __init__(self, exam_name, raw_corr, raw_codes, universal_codes, totals, init, versions=None):
+    def __init__(self, exam_name, raw_corr, raw_codes, universal_codes, totals, init, titles, versions=None):
         """
         Grader class to contain raw correction data and processed grades
 
@@ -121,6 +129,7 @@ class Grader:
         self.universal_codes = universal_codes
         self.totals = totals
         self.init = init
+        self.titles = titles
         self.versions = versions
 
         # Constants - hardcoded
@@ -362,26 +371,30 @@ class Grader:
             codes = self.codes.rename(index=question_numbers, level=0).sort_index()
             grades = self.grades.rename(columns=question_numbers, level=0).sort_index()
             totals = self.totals.rename(index=question_numbers, level=0).sort_index()
+            titles = self.titles.rename(index=question_numbers, level=0).sort_index()
             c = c.rename(index=question_numbers, level=0)
         else:
             codes = self.codes
             grades = self.grades
             totals = self.totals
+            titles = self.titles
 
         # Index des erreurs commises
         ix = c.where(c != 0.).dropna().sort_index().index
 
         # Données sur les erreurs commises
-        details_erreurs = codes.loc[ix][['définition', 'points']]
-        details_erreurs.columns = ['Erreur', 'points']
-        error_table = details_erreurs[['points', 'Erreur']].to_html()
+        frequence_erreurs = c.loc[ix]
+        frequence_erreurs.name = 'Fréquence'
+        details_erreurs = pd.concat([codes.loc[ix][['définition', 'points']], frequence_erreurs], axis=1)
+        details_erreurs.columns = ['Erreur', 'Points par erreur', 'Fréquence']
+        error_table = details_erreurs[['Points par erreur', 'Fréquence', 'Erreur']].to_html()
 
         lettre = self.message['salutation'].format(self.contacts.loc[student_id, 'prénom'],
                                                    self.contacts.loc[student_id, 'nom'],)
         lettre += self.message['foreword'].replace('\n', '<br>')
         lettre += self.message['score_overview'].format(self.mean, self.median, self.grades.loc[student_id].sum())
         for i in totals.index:
-            lettre += self.message['score_details'].format(i, grades.loc[student_id, i], totals[i])
+            lettre += self.message['score_details'].format(i, titles[i], grades.loc[student_id, i], totals[i])
 
         lettre += self.message['mistakes_details'].format(error_table)
         lettre += self.message['closing'].replace('\n', '<br>')
