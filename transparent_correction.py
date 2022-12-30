@@ -138,8 +138,20 @@ class Grader:
         self._COLS_TO_ALWAYS_DROP = ['version', 'Exemple/explication']
 
         # Refined data
-        self.contacts = raw_corr[self._CONTACT_COLS]
-        self.corr = raw_corr.drop(self._CONTACT_COLS, axis=1)
+        contacts = raw_corr[self._CONTACT_COLS]
+        corr = raw_corr.drop(self._CONTACT_COLS, axis=1)
+
+        # Remove any student not present
+        absent = corr.isna().all(1)
+        logging.warning("Removing these student ID's, as clearly absent from exam: {}".format(
+            list(absent[absent].index)))
+        self.corr = corr.loc[~absent]
+        self.contacts = contacts.loc[~absent]
+        maybe_absent = self.corr.loc[:, self.totals > 0].isna().any(1)
+        if maybe_absent.any():
+            logging.warning("The following ID's have NaN in their correction, absent from exam?: {}".format(
+                list(maybe_absent[maybe_absent].index)))
+
 
         # Semi-final variables
         self.correction_matrix = None
@@ -335,13 +347,24 @@ class Grader:
 
     def give_overview(self, q=None, bins=10, filename=None, fail=50, ):
 
-        # TODO: fix properly
-        if q is None:
-            grades_q = self.grades_total['points']
-        else:
-            grades_q = self.grades_rel[[q]]
+        if q == 'all':
+            for i in self.totals.index:
+                print("{} : {}".format(i, self.titles[i]))
+                if filename:
+                    name = filename + '_' + i
+                else:
+                    name = None
 
-        out = give_overview(grades_q, q, bins=bins, filename=filename, fail=fail)
+                out = give_overview(self.grades_rel[[i]], i, bins=bins, filename=name, fail=fail)
+        else:
+            if q is None:
+                grades_q = self.grades_total['points']
+
+            else:
+                print("{} : {}".format(q, self.titles[q]))
+                grades_q = self.grades_rel[[q]]
+
+            out = give_overview(grades_q, q, bins=bins, filename=filename, fail=fail)
         return out
 
     def archive_grades(self, directory=None):
@@ -401,7 +424,7 @@ class Grader:
         lettre += _txt_end
         return lettre
 
-    def send_results(self, sender, server, targeted_recipients=None, bcc_recipients=None, exam_dir=None):
+    def send_results(self, sender, server, targeted_recipients=None, bcc_recipients=None, cc_recipients=None, exam_dir=None):
         """ Send result report to each student
 
 
@@ -422,6 +445,9 @@ class Grader:
             if bcc_recipients is None:
                 bcc_recipients = []
 
+            if cc_recipients is None:
+                cc_recipients = []
+
             if targeted_recipients is None:
                 recipients = self.correction_matrix.index
             else:
@@ -436,6 +462,7 @@ class Grader:
                 msg['Subject'] = "Votre note pour : {}".format(self.exam_name)
                 msg['From'] = sender
                 msg['BCC'] = ', '.join(bcc_recipients)
+                msg['CC'] = ', '.join(cc_recipients)
                 msg['To'] = self.contacts.loc[student_id, 'courriel']
 
                 msg.attach(MIMEText(self.compilation_message(student_id, version), "html"))
@@ -476,35 +503,43 @@ def give_overview(grades, question=None, bins=None, filename=None, fail=None):
     print("Nombre total d'étudiants: {:.0f}".format(grades.shape[0]))
     if fail:
         print("Nombre d'échecs: {:.0f}".format(np.sum(grades < fail)))
-    ax = sns.distplot(grades,
-                      bins=bins,
-                      rug=True, 
-                      kde=False, 
-                      rug_kws={"color": 'r'},
-                      hist_kws={"alpha": .6},
-                      axlabel='Notes', 
-                      label=question)
-    ax.set(ylabel='Nombre d\'étudiants')
-    ax.set_ylim(ymin=0)
-    #    ax.set_xlim(xmin=0)
 
-    # Plot verticle line 
-    dims = ax.axis()
-    plt.vlines(median, dims[2], dims[3], label='médiane', 
-               colors='green')
-    plt.vlines(mean, dims[2], dims[3], label='moyenne')
-    plt.vlines(mean-stdev, dims[2], dims[3], 
-               label='- déviation standard', colors='gray')
-    plt.vlines(mean+stdev, dims[2], dims[3], 
-               label='+ déviation standard', colors='gray')
-    if fail:
-        plt.vlines(fail, dims[2], dims[3], label='passage', colors='red')
+    try:
+        ax = sns.distplot(grades,
+                          bins=bins,
+                          rug=True, 
+                          kde=False, 
+                          rug_kws={"color": 'r'},
+                          hist_kws={"alpha": .6},
+                          axlabel='Notes', 
+                          label=question)
+        ax.set(ylabel='Nombre d\'étudiants')
+        ax.set_ylim(ymin=0)
+        #    ax.set_xlim(xmin=0)
 
-    plt.legend(loc='upper left')
+        # Plot verticle line 
+        dims = ax.axis()
+        plt.vlines(median, dims[2], dims[3], label='médiane', 
+                   colors='green')
+        plt.vlines(mean, dims[2], dims[3], label='moyenne')
+        plt.vlines(mean-stdev, dims[2], dims[3], 
+                   label='- déviation standard', colors='gray')
+        plt.vlines(mean+stdev, dims[2], dims[3], 
+                   label='+ déviation standard', colors='gray')
+        if fail:
+            plt.vlines(fail, dims[2], dims[3], label='passage', colors='red')
 
-    if filename:
-        plt.savefig(filename + '.svg')
-        plt.savefig(filename + '.pdf')
+        plt.legend(loc='upper left')
+
+        if filename:
+            plt.savefig(filename + '.svg')
+            plt.savefig(filename + '.pdf')
+
+        plt.show()
+    except ValueError:
+        ax = None
+        grades=None
+        print("La distribution des notes n'a pu être représentée graphiquement.")
 
     return grades, ax
 
@@ -525,20 +560,23 @@ def cluster_grades(grades, threshold_passing, threshold_a=None, threshold_a_star
     """
     # Sort passsing grades
     passing_grades = grades[grades > threshold_passing]
-    cotes = grades.sort_values().to_frame()
+    cotes = grades.sort_values().to_frame('total')
 
     # Calculate deltas between adjacent grades
     cotes['delta'] = ((cotes['total'] - cotes['total'].shift(+1)).round(1)).fillna(0)
 
-    # division in quantiles
-    cotes['quantiles'] = pd.qcut(passing_grades, q=len(_ALL_PASSING_NORMAL_LETTERS), labels=_ALL_PASSING_NORMAL_LETTERS)
+    try:
+        # division in quantiles
+        cotes['quantiles'] = pd.qcut(passing_grades, q=len(_ALL_PASSING_NORMAL_LETTERS), labels=_ALL_PASSING_NORMAL_LETTERS)
 
-    # division in equal grande ranges
-    cotes['equal_ranges'] = pd.cut(passing_grades, bins=len(_ALL_PASSING_LETTERS), labels=_ALL_PASSING_LETTERS)
+        # division in equal grande ranges
+        cotes['equal_ranges'] = pd.cut(passing_grades, bins=len(_ALL_PASSING_LETTERS), labels=_ALL_PASSING_LETTERS)
 
-    # Jenks Natural break clustering
-    breaks = jenkspy.jenks_breaks(passing_grades.values, len(_ALL_PASSING_LETTERS))
-    cotes['jenks'] = pd.cut(passing_grades, bins=breaks, labels=_ALL_PASSING_LETTERS, include_lowest=True)
+        # Jenks Natural break clustering
+        breaks = jenkspy.jenks_breaks(passing_grades.values, len(_ALL_PASSING_LETTERS))
+        cotes['jenks'] = pd.cut(passing_grades, bins=breaks, labels=_ALL_PASSING_LETTERS, include_lowest=True)
+    except ValueError:
+        print("Cluster analysis failed. Grade distribution too simple, with duplicate edges?")
 
     # Proposed divisions
 
