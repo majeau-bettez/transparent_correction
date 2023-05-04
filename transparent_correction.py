@@ -253,7 +253,14 @@ class Grader:
             new_codes = pd.concat([self.universal_codes['définition'], selected_codes], axis=1, join='inner')
             new_codes.index = pd.MultiIndex.from_product([[ix], new_codes.index])
             self.codes = pd.concat([self.codes, new_codes])
-        self.codes.reindex(index=self.totals.index, level=0)
+        
+
+        duplicate_codes = self.codes.index.duplicated()
+        if duplicate_codes.any():
+            duplicates = self.codes.index[duplicate_codes]
+            raise ValueError(f"There are duplicate error code definitions: {duplicates}.")
+        else:
+            self.codes.reindex(index=self.totals.index, level=0)
 
     def distribute_codes(self, common_ix, applicables):
         """ Expand code list if a common correction code is applicable to more than one question (but not all).
