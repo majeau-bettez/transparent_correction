@@ -624,6 +624,19 @@ def all_letters(threshold_d, threshold_a, threshold_a_star):
     thresholds[-1, :] = [threshold_a_star, 'a*']
     return thresholds
 
+def identify_forcing(grades, threshold_d, threshold_a, threshold_a_star, forcing=0.2):
+
+    thresholds = all_letters(threshold_d, threshold_a, threshold_a_star)
+
+    for i in thresholds:
+        diff = i[0] - grades
+        bo = (diff > 0.0) & (diff < forcing)
+        if bo.any():
+            print(f"Potential forcing for {i[1]}:")
+            print(grades.loc[bo])
+            print(" ")
+
+
 
 def give_letter(grade, threshold_d, threshold_a, threshold_a_star, forcing=0.0):
 
