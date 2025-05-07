@@ -431,7 +431,8 @@ class Grader:
         lettre += _txt_end
         return lettre
 
-    def send_results(self, sender, server, targeted_recipients=None, bcc_recipients=None, cc_recipients=None, exam_dir=None):
+    def send_results(self, sender, server, targeted_recipients=None, bcc_recipients=None, cc_recipients=None,
+                     reply_to=None, exam_dir=None):
         """ Send result report to each student
 
 
@@ -444,10 +445,6 @@ class Grader:
             server_login = getpass.getpass('Insert your server login ID (e.g., p-matricule): ')
             password = getpass.getpass('Insert your password for the email server: ')
 
-            # Contact server
-            server = smtplib.SMTP(server, 587)
-            server.starttls()
-            server.login(server_login, password)
 
             if bcc_recipients is None:
                 bcc_recipients = []
@@ -455,43 +452,51 @@ class Grader:
             if cc_recipients is None:
                 cc_recipients = []
 
+            if reply_to is None:
+                reply_to = []
+
             if targeted_recipients is None:
                 recipients = self.correction_matrix.index
             else:
                 recipients = targeted_recipients
 
-            # Write email
-            for student_id in recipients:
+            # Contact server
+            with smtplib.SMTP_SSL(server) as server:
+                server.login(server_login, password)
 
-                version = self._get_version(student_id)
-                msg = MIMEMultipart()
+                # Write email
+                for student_id in recipients:
 
-                msg['Subject'] = "Votre note pour : {}".format(self.exam_name)
-                msg['From'] = sender
-                msg['BCC'] = ', '.join(bcc_recipients)
-                msg['CC'] = ', '.join(cc_recipients)
-                msg['To'] = self.contacts.loc[student_id, 'courriel']
+                    version = self._get_version(student_id)
+                    msg = MIMEMultipart()
 
-                msg.attach(MIMEText(self.compilation_message(student_id, version), "html"))
+                    msg['Subject'] = "Votre note pour : {}".format(self.exam_name)
+                    msg['From'] = sender
+                    if reply_to:
+                        msg['reply-to'] = ', '.join(reply_to)
+                    msg['BCC'] = ', '.join(bcc_recipients)
+                    msg['CC'] = ', '.join(cc_recipients)
+                    msg['To'] = self.contacts.loc[student_id, 'courriel']
 
-                if exam_dir:
-                    for i in os.listdir(exam_dir / str(student_id)):
-                        if re.search('.\.pdf$', i):
-                            part = MIMEBase('application', 'octet-stream')
-                            with open(exam_dir / str(student_id) / i, 'rb') as file:
-                                part.set_payload(file.read())
-                            encoders.encode_base64(part)
-                            part.add_header('Content-Disposition',
-                                            'attachment; filename="{}"'.format(Path(i).name))
-                            msg.attach(part)
+                    msg.attach(MIMEText(self.compilation_message(student_id, version), "html"))
 
-                server.send_message(msg)
-                full_name = self.contacts.loc[student_id, ['prénom', 'nom']]
-                print('Message sent to {} {}'.format(*full_name))
-                time.sleep(5)
+                    if exam_dir:
+                        for i in os.listdir(exam_dir / str(student_id)):
+                            if re.search('.\.pdf$', i):
+                                part = MIMEBase('application', 'octet-stream')
+                                with open(exam_dir / str(student_id) / i, 'rb') as file:
+                                    part.set_payload(file.read())
+                                encoders.encode_base64(part)
+                                part.add_header('Content-Disposition',
+                                                'attachment; filename="{}"'.format(Path(i).name))
+                                msg.attach(part)
 
-            print('Done sending messages!')
-            server.quit()
+                    server.send_message(msg)
+                    full_name = self.contacts.loc[student_id, ['prénom', 'nom']]
+                    print('Message sent to {} {}'.format(*full_name))
+                    time.sleep(5)
+
+                print('Done sending messages!')
 
 
 def give_overview(grades, question=None, bins=None, filename=None, fail=None):
