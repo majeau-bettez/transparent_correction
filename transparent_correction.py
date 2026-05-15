@@ -33,6 +33,7 @@ _ALL_LETTERS = ['f', 'd', 'd+', 'c', 'c+', 'b', 'b+', 'a', 'a+']
 _ALL_PASSING_LETTERS = ['d', 'd+', 'c', 'c+', 'b', 'b+', 'a', 'a+']
 _ALL_PASSING_NORMAL_LETTERS = ['d', 'd+', 'c', 'c+', 'b', 'b+', 'a']
 
+
 # Text strings for automated messages
 
 _txt_salutation = """\
@@ -147,7 +148,8 @@ class Grader:
             list(absent[absent].index)))
         self.corr = corr.loc[~absent]
         self.contacts = contacts.loc[~absent]
-        maybe_absent = self.corr.loc[:, self.totals > 0].isna().any(1)
+
+        maybe_absent = self.corr.loc[:, self.totals > 0].isna().any(axis=1)
         if maybe_absent.any():
             logging.warning("The following ID's have NaN in their correction, absent from exam?: {}".format(
                 list(maybe_absent[maybe_absent].index)))
@@ -499,7 +501,7 @@ class Grader:
                 print('Done sending messages!')
 
 
-def give_overview(grades, question=None, bins=None, filename=None, fail=None):
+def give_overview(grades, question=None, bins=10, filename=None, fail=None):
     """ Donner une vue d'ensemble"""
     if question is not None:
         grades = grades[question]
@@ -517,27 +519,21 @@ def give_overview(grades, question=None, bins=None, filename=None, fail=None):
         print("Nombre d'échecs: {:.0f}".format(np.sum(grades < fail)))
 
     try:
-        ax = sns.distplot(grades,
-                          bins=bins,
-                          rug=True, 
-                          kde=False, 
-                          rug_kws={"color": 'r'},
-                          hist_kws={"alpha": .6},
-                          axlabel='Notes', 
-                          label=question)
+        ax = sns.histplot(grades,
+                  bins=bins,
+                  alpha=0.6,
+                  label=question)
+        sns.rugplot(grades, color='r', ax=ax)
+        ax.set_xlabel('Notes')
         ax.set(ylabel='Nombre d\'étudiants')
         ax.set_ylim(ymin=0)
-        #    ax.set_xlim(xmin=0)
 
-        # Plot verticle line 
         dims = ax.axis()
-        plt.vlines(median, dims[2], dims[3], label='médiane', 
-                   colors='green')
+        plt.vlines(median, dims[2], dims[3], label='médiane', colors='green')
         plt.vlines(mean, dims[2], dims[3], label='moyenne')
-        plt.vlines(mean-stdev, dims[2], dims[3], 
-                   label='- déviation standard', colors='gray')
-        plt.vlines(mean+stdev, dims[2], dims[3], 
-                   label='+ déviation standard', colors='gray')
+        plt.vlines(mean-stdev, dims[2], dims[3], label='- déviation standard', colors='gray')
+        plt.vlines(mean+stdev, dims[2], dims[3], label='+ déviation standard', colors='gray')
+
         if fail:
             plt.vlines(fail, dims[2], dims[3], label='passage', colors='red')
 
@@ -556,7 +552,7 @@ def give_overview(grades, question=None, bins=None, filename=None, fail=None):
     return grades, ax
 
 
-def cluster_grades(grades, threshold_passing, threshold_a=None, threshold_a_star=None):
+def cluster_grades(grades, threshold_passing, threshold_a=None, threshold_a_star=None, max_grade=100):
     """
 
     Parameters
@@ -594,8 +590,9 @@ def cluster_grades(grades, threshold_passing, threshold_a=None, threshold_a_star
 
     if threshold_a:
         breaks = pd.DataFrame(all_letters(threshold_passing, threshold_a, threshold_a_star))
-        breaks = breaks.append([100.0])
-        cotes['proposed'] = pd.cut(passing_grades, bins=breaks[0], labels=breaks[1].dropna(), include_lowest=True)
+        bins =  breaks[0].to_list()
+        bins.append(max_grade)
+        cotes['proposed'] = pd.cut(passing_grades, bins=bins, labels=breaks[1], include_lowest=True)
 
     # Finaliser
     letter_cols = [i for i in cotes.columns if i not in ['mintotal', 'delta']]
